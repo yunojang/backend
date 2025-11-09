@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://redis:6379/0")
     S3_BUCKET: str = os.getenv("AWS_S3_BUCKET", "dupilot-dev-media")
     AWS_REGION: str = os.getenv("AWS_REGION", "ap-northeast-2")
+    INGEST_WORKDIR: str = os.getenv("INGEST_WORKDIR", "/tmp/dupilot-ingest")
 
 
 settings = Settings()

@@ -10,9 +10,10 @@ services:
     volumes:
       - .:/workspace:cached
       - ~/.aws:/root/.aws:ro # host 프로파일을 컨테이너에 전달
+      - ${GOOGLE_APPLICATION_CREDENTIALS_HOST}:${GOOGLE_APPLICATION_CREDENTIALS}:ro # GCP 서비스 키 전달
       # - C:/Users/jjy33/Desktop/jungle/04-namanmu/key:/app/key
     # command: sleep infinity
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 #--reload --reload-dir app --reload-exclude 'app/workers/*'
     env_file:
       - .env
     ports:
@@ -31,10 +32,16 @@ services:
   worker:
     build: .
     working_dir: /workspace
-    command: watchfiles --filter python "python -m app.workers.video_worker"
+    command: python -m app.workers.video_worker
+    # command: >
+    #   watchfiles --filter python
+    #   --watch app/workers
+    #   --ignore-paths /workspace/app/__pycache__
+    #   -- "python -m app.workers.video_worker"
     volumes:
       - .:/workspace:cached
       - ~/.aws:/root/.aws:ro
+      - ./worker-scratch:/tmp/dupilot-ingest
     environment:
       PYTHONPATH: /workspace
       REDIS_URL: redis://redis:6379/0

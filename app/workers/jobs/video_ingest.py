@@ -2,31 +2,46 @@ import os
 import asyncio
 import tempfile
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
+from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import HTTPException, status
 from rq import get_current_job
 from yt_dlp import YoutubeDL
-from botocore.exceptions import BotoCoreError, ClientError
 
-from app.api.jobs.service import start_job
-from app.api.pipeline.models import PipelineStatus, PipelineUpdate
-from app.api.pipeline.service import update_pipeline_stage
-from app.api.project.models import ProjectUpdate
-from app.api.project.service import ProjectService
-from app.config.db import database
 from app.config.env import settings
 from app.config.s3 import s3
 from app.utils.s3 import build_object_key
 
+from app.workers.jobs.video_ingest_finalizer import finalize_ingest
+from app.workers.jobs.video_ingest_progress import (
+    DOWNLOAD_PROGRESS_PARTS,
+    FINALIZE_PROGRESS_DONE,
+    FINALIZE_PROGRESS_START,
+    UPLOAD_PROGRESS_DONE,
+    UPLOAD_PROGRESS_START,
+    emit_progress,
+    make_progress_payload,
+    map_download_progress,
+    download_progress_for_completed_parts,
+    update_job_stage,
+)
 
-async def _download_youtube_video(url: str, temp_dir: str) -> Path:
+
+async def _download_youtube_video(
+    url: str,
+    temp_dir: str,
+    *,
+    progress_hook: Callable[[dict[str, Any]], None] | None = None,
+) -> Path:
     def _download() -> Path:
         ydl_opts = {
             "outtmpl": os.path.join(temp_dir, "%(id)s.%(ext)s"),
             "format": "bestvideo[ext=mp4]+bestaudio/best",
             "merge_output_format": "mp4",
         }
+        if progress_hook:
+            ydl_opts["progress_hooks"] = [progress_hook]
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             return Path(ydl.prepare_filename(info))
@@ -34,34 +49,9 @@ async def _download_youtube_video(url: str, temp_dir: str) -> Path:
     return await asyncio.to_thread(_download)
 
 
-project_service = ProjectService(database)
-
-
-async def _finalize_ingest(project_id: str, object_key: str) -> None:
-    update_payload = ProjectUpdate(
-        project_id=project_id,
-        status="upload_done",
-        video_source=object_key,
-    )
-    project = await project_service.update_project(payload=update_payload)
-
-    await start_job(project, database)
-    await update_pipeline_stage(
-        database,
-        PipelineUpdate(
-            project_id=project_id,
-            stage_id="upload",
-            status=PipelineStatus.COMPLETED,
-            progress=100,
-        ),
-    )
-
-
 async def _run_ingest_async(payload: Mapping[str, Any]) -> str:
     source_url = payload.get("source_url")
     project_id = payload.get("project_id")
-
-    print("@run", source_url, project_id)
 
     if not source_url or not project_id:
         raise HTTPException(
@@ -74,15 +64,53 @@ async def _run_ingest_async(payload: Mapping[str, Any]) -> str:
         raise HTTPException(status_code=500, detail="AWS_S3_BUCKET env not set")
 
     job = get_current_job()
-    if job:
-        job.meta.update(stage="downloading")
-        job.save_meta()
-        print(job)
+    job_id = job.id if job else None
+    update_job_stage(job, "downloading", progress=0)
+    emit_progress(
+        project_id,
+        {
+            "job_id": job_id,
+            "stage": "downloading",
+            "status": "다운로드 시작",
+            "progress": 5,  # 초기 진행률 설정
+        },
+    )
+
+    last_download_progress = -1
+    completed_parts = 0
+
+    def _progress_hook(status: dict[str, Any]) -> None:
+        nonlocal last_download_progress, completed_parts
+        progress_payload = make_progress_payload(status)
+        if progress_payload is None:
+            return
+        status_name = status.get("status")
+        if status_name == "finished":
+            completed_parts = min(completed_parts + 1, DOWNLOAD_PROGRESS_PARTS)
+            mapped_progress = download_progress_for_completed_parts(completed_parts)
+        else:
+            raw_progress = progress_payload.get("progress")
+            mapped_progress = map_download_progress(
+                raw_progress, completed_parts=completed_parts
+            )
+            if mapped_progress is None:
+                return
+        if mapped_progress == last_download_progress:
+            return
+        last_download_progress = mapped_progress
+        progress_payload["progress"] = mapped_progress
+        progress_payload.update({"job_id": job_id, "stage": "downloading"})
+        emit_progress(project_id, progress_payload)
 
     # 1) yt 다운로드 + s3 업로드
-    with tempfile.TemporaryDirectory() as temp_dir:
+    ingest_root = Path(settings.INGEST_WORKDIR)
+    ingest_root.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory(dir=str(ingest_root)) as temp_dir:
         try:
-            local_file = await _download_youtube_video(source_url, temp_dir)
+            local_file = await _download_youtube_video(
+                source_url, temp_dir, progress_hook=_progress_hook
+            )
         except HTTPException:
             raise
         except Exception as exc:
@@ -93,9 +121,16 @@ async def _run_ingest_async(payload: Mapping[str, Any]) -> str:
 
         object_key = build_object_key(project_id, local_file)
 
-        if job:
-            job.meta.update(stage="uploading")
-            job.save_meta()
+        update_job_stage(job, "uploading", progress=UPLOAD_PROGRESS_START)
+        emit_progress(
+            project_id,
+            {
+                "job_id": job_id,
+                "stage": "uploading",
+                "status": "업로드 시작",
+                "progress": UPLOAD_PROGRESS_START,
+            },
+        )
 
         try:
             s3.upload_file(str(local_file), bucket, object_key)
@@ -105,16 +140,40 @@ async def _run_ingest_async(payload: Mapping[str, Any]) -> str:
                 detail="S3 업로드 중 오류가 발생했습니다.",
             ) from exc
 
-    if job:
-        job.meta.update(stage="finalizing")
-        job.save_meta()
-        print(job)
+    emit_progress(
+        project_id,
+        {
+            "job_id": job_id,
+            "stage": "uploading",
+            "status": "업로드 완료",
+            "progress": UPLOAD_PROGRESS_DONE,
+        },
+    )
 
-    await _finalize_ingest(project_id, object_key)
+    update_job_stage(job, "finalizing", progress=FINALIZE_PROGRESS_START)
+    emit_progress(
+        project_id,
+        {
+            "job_id": job_id,
+            "stage": "finalizing",
+            "status": "최종 처리 시작",
+            "progress": FINALIZE_PROGRESS_START,
+        },
+    )
 
-    if job:
-        job.meta.update(stage="done", s3_key=object_key)
-        job.save_meta()
+    await finalize_ingest(project_id, object_key)
+
+    update_job_stage(job, "done", s3_key=object_key, progress=FINALIZE_PROGRESS_DONE)
+    emit_progress(
+        project_id,
+        {
+            "job_id": job_id,
+            "stage": "done",
+            "status": "최종 처리 완료",
+            "s3_key": object_key,
+            "progress": FINALIZE_PROGRESS_DONE,
+        },
+    )
     return object_key
 
 

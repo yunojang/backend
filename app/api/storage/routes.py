@@ -1,7 +1,9 @@
 # app/api/routes/upload.py
 import os
+import asyncio
 from uuid import uuid4
 from hashlib import sha256
+from sse_starlette.sse import EventSourceResponse
 
 from fastapi import APIRouter, HTTPException, Request, status, Depends
 from fastapi.responses import RedirectResponse
@@ -162,16 +164,6 @@ async def finish_upload(
             detail="Failed to update project",
         ) from exc
 
-    await update_pipeline_stage(
-        db,
-        PipelineUpdate(
-            project_id=payload.project_id,
-            stage_id="upload",
-            status=PipelineStatus.COMPLETED,
-            progress=100,
-        ),
-    )
-
     await start_job(result, db)
     await update_pipeline_stage(
         db,
@@ -201,3 +193,29 @@ def media_redirect(key: str):
     resp = RedirectResponse(url, status_code=302)
     resp.headers["Cache-Control"] = "private, max-age=300"
     return resp
+
+
+@upload_router.get("/{project_id}/events")
+async def stream_events(project_id: str):
+    redis = get_redis()
+    pubsub = redis.pubsub()
+    channel = f"uploads:{project_id}"
+    pubsub.subscribe(channel)
+
+    async def event_stream():
+        loop = asyncio.get_running_loop()
+        try:
+            while True:
+                message = await loop.run_in_executor(None, pubsub.get_message, 1.0)
+                if not message or message["type"] != "message":
+                    await asyncio.sleep(0.1)
+                    continue
+                data = message["data"]
+                if isinstance(data, bytes):
+                    data = data.decode()
+                yield {"event": "progress", "data": data}
+        finally:
+            pubsub.unsubscribe(channel)
+            pubsub.close()
+
+    return EventSourceResponse(event_stream())

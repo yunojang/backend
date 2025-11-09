@@ -75,6 +75,16 @@ async def list_projects(db: DbDep):
     # return {ProjectOut.model_validate(doc) for doc in docs]
 
 
+# import time, logging
+
+# logger = logging.getLogger(__name__)
+
+
+# @project_router.get("/health", summary="프로젝트 헬스체크")
+# async def health_check():
+#     return {"status": "ok"}
+
+
 @project_router.get("/{project_id}", summary="프로젝트 상세 조회")
 async def get_project(project_id: str, db: DbDep):
     try:
