@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     await ensure_db_connection()
     try:
-        vector_search("warmup", top_k=1)
+        # vector_search("warmup", top_k=1)
         print("vector embed model warmup")
     except Exception as exc:
         logger.warning("Glossary warmup failed: %s", exc)

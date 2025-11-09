@@ -1,0 +1,60 @@
+version: "3.9"
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dupilot-backend
+    working_dir: /workspace
+    volumes:
+      - .:/workspace:cached
+      - ~/.aws:/root/.aws:ro # host 프로파일을 컨테이너에 전달
+      # - C:/Users/jjy33/Desktop/jungle/04-namanmu/key:/app/key
+    # command: sleep infinity
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    depends_on: [mongo, redis]
+    restart: unless-stopped
+    environment:
+      PYTHONPATH: /workspace
+      AWS_PROFILE: dev # ← 명시 추천 (s3.py가 기본 dev지만 헷갈림 방지)
+      AWS_REGION: ap-northeast-2 # ← 지역 고정
+      MONGO_URL_DEV: ${MONGO_URL_DEV}
+      UVICORN_HOST: 0.0.0.0
+      UVICORN_PORT: 8000
+      REDIS_URL: redis://redis:6379/0
+      # WATCHFILES_FORCE_POLLING: "1"
+  worker:
+    build: .
+    working_dir: /workspace
+    command: watchfiles --filter python "python -m app.workers.video_worker"
+    volumes:
+      - .:/workspace:cached
+      - ~/.aws:/root/.aws:ro
+    environment:
+      PYTHONPATH: /workspace
+      REDIS_URL: redis://redis:6379/0
+      AWS_REGION: ap-northeast-2
+      AWS_PROFILE: dev
+    depends_on: [redis]
+  mongo:
+    image: mongo:7
+    container_name: dupilot-mongo
+    ports:
+      - "27018:27017"
+    volumes:
+      - mongo-data:/data/db
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: example
+      MONGO_INITDB_DATABASE: dupilot
+  redis:
+    image: redis:7
+    command: ["redis-server", "--appendonly", "yes"]
+
+volumes:
+  mongo-data:

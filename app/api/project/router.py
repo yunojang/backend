@@ -7,7 +7,7 @@ from app.api.deps import DbDep
 from .models import ProjectOut
 from .service import ProjectService
 from ..segment.segment_service import SegmentService
-from app.api.auth.model import UserOut
+from .models import ProjectCreate, ProjectCreateResponse, ProjectOut
 
 # from app.api.auth.service import get_current_user_from_cookie
 
@@ -23,6 +23,20 @@ def _serialize(value: Any) -> Any:
 
 
 project_router = APIRouter(prefix="/projects", tags=["Projects"])
+
+
+@project_router.post(
+    "/",
+    response_model=ProjectCreateResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="프로젝트 생성",
+)
+async def create_project_endpoint(
+    payload: ProjectCreate,
+    project_service: ProjectService = Depends(ProjectService),
+) -> ProjectCreateResponse:
+    result = await project_service.create_project(payload)
+    return ProjectCreateResponse.model_validate(result)
 
 
 @project_router.get(
@@ -53,17 +67,16 @@ async def list_my_projects(
         ) from exc
 
 
-@project_router.get("/", response_model=List[ProjectOut], summary="프로젝트 전체 목록")
-async def list_projects(db: DbDep) -> List[ProjectOut]:
+@project_router.get("/", summary="프로젝트 전체 목록")
+async def list_projects(db: DbDep):
+    # await db["projects"].delete_many({})
     docs = await db["projects"].find().sort("created_at", -1).to_list(length=None)
+    return {"items": [ProjectOut.model_validate(doc) for doc in docs]}
+    # return {ProjectOut.model_validate(doc) for doc in docs]
 
-    return [ProjectOut.model_validate(doc) for doc in docs]
 
-
-@project_router.get(
-    "/{project_id}", response_model=ProjectOut, summary="프로젝트 상세 조회"
-)
-async def get_project(project_id: str, db: DbDep) -> ProjectOut:
+@project_router.get("/{project_id}", summary="프로젝트 상세 조회")
+async def get_project(project_id: str, db: DbDep):
     try:
         project_oid = ObjectId(project_id)
     except InvalidId as exc:
@@ -102,8 +115,7 @@ async def get_project(project_id: str, db: DbDep) -> ProjectOut:
         segment["issues"] = issues_by_segment.get(seg_id, [])
     project["segments"] = segments
     serialized = _serialize(project)
-
-    return ProjectOut.model_validate(serialized)
+    return serialized
 
 
 @project_router.delete("/{project_id}", response_model=int, summary="프로젝트 삭제")

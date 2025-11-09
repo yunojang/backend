@@ -22,8 +22,21 @@ class ProjectPublic(BaseModel):
 
 
 class ProjectCreate(BaseModel):
-    filename: str
+    title: str
+    filename: str | None = None
     owner_code: str
+    # sourceType: 'youtube' | 'file'
+    # youtubeUrl: str
+    # fileName: str | None
+    # fileSize: int | None
+    sourceLanguage: str
+    targetLanguages: List[str]
+    # detectAutomatically: bool
+    speakerCount: int
+
+
+class ProjectCreateResponse(BaseModel):
+    project_id: str
 
 
 class ProjectUpdate(BaseModel):
@@ -44,6 +57,6 @@ class ProjectOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     segment_assets_prefix: Optional[str] = None
-    segments: Optional[List[Dict[str, Any]]] = None
-    owner_code: str
-    issue_count: int = 0  # 새로 집계한 값을 넣기 위한 필드    
+    # segments: Optional[List[Dict[str, Any]]] = None
+    # owner_code: str
+    issue_count: int = 0  # 새로 집계한 값을 넣기 위한 필드

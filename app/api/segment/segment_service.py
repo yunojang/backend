@@ -109,10 +109,12 @@ class SegmentService:
         self, project_id: str, segment_id: str
     ) -> Tuple[Dict[str, Any], Dict[str, Any], int, ObjectId]:
         project, object_id = await self._load_project(project_id)
-        segments = project.get("segments") or []
-        for index, segment in enumerate(segments):
-            if str(segment.get("segment_id")) == str(segment_id):
-                return project, dict(segment), index, object_id
+
+        segment = await self.segment_collection.find_one(
+            {"segment_id": ObjectId(segment_id), "project_id": object_id}
+        )
+
+        return project, dict(segment), segment["segment_index"], object_id
         raise HTTPException(status_code=404, detail="segment not found")
 
     async def set_segment_translation(

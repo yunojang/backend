@@ -83,8 +83,9 @@ class ProjectService:
 
     async def create_project(self, payload: ProjectCreate) -> str:
         now = datetime.now()
+        payload_data = payload.model_dump(exclude_none=True)
         doc = {
-            "title": payload.filename,
+            **payload_data,
             "progress": 0,
             "status": "upload_ready",
             "video_source": None,
@@ -99,7 +100,7 @@ class ProjectService:
         # 프로젝트 생성 시 파이프 라인도 생성
         await _create_default_pipeline(db=self.db, project_id=project_id)
 
-        return project_id
+        return {"project_id": project_id}
 
     async def update_project(self, payload: ProjectUpdate) -> ProjectPublic:
         project_id = payload.project_id
