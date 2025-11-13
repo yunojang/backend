@@ -38,7 +38,6 @@ async def _download_youtube_video(
 ) -> tuple[Path, dict[str, Any] | None]:
     def _download() -> Path:
         import random
-        import time
 
         # 다양한 User-Agent 목록
         user_agents = [
@@ -114,9 +113,6 @@ async def _download_youtube_video(
 
         if progress_hook:
             ydl_opts["progress_hooks"] = [progress_hook]
-
-        # 랜덤 지연 추가 (1-3초)
-        time.sleep(random.uniform(1, 3))
 
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
